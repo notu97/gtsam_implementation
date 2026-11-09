@@ -219,6 +219,26 @@ noise = gtsam.noiseModel.Robust.Create(
     gtsam.noiseModel.mEstimator.Huber.Create(1.345),
     gtsam.noiseModel.Isotropic.Sigma(2, 1.0))
 
+r'''
+
+GenericProjectionFactorCal3_S2 Explanation:
+
+For each entry (lid, k, u, v) in good_kf (landmark lid was seen in keyframe k at pixel $(u, v)$), 
+it creates a factor that:
+
+- Takes the current estimates of the camera pose X(k) ($T_{WC}$) and the landmark L(lid) ($p_\ell$).
+- Projects the landmark into the image with intrinsics K:
+      $$\hat u = \pi\!\left(K,\ T_{WC}^{-1}\, p_\ell\right)$$
+
+- Compares the projection with the measured pixel:
+      $$e = (u, v) - \hat u$$
+
+- Weights the error with noise ($\sigma = 1$ px, Huber kernel).
+
+During optimization, GTSAM adjusts X(k) and L(lid) to make these pixel errors small, 
+balanced against the WNOA priors. Over all 139k factors, this is bundle adjustment on the keyframes. 
+In short, these factors tie the camera poses to the 3D points through what the camera actually saw.'''
+
 for lid, k, u, v in good_kf:
     graph.add(gtsam.GenericProjectionFactorCal3_S2(
         gtsam.Point2(u, v), noise, X(k), L(lid), K))
