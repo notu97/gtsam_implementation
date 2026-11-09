@@ -19,6 +19,8 @@ def ns_to_s(ns):           # 1403636579963555574 -> "1403636579.963555574"
     a, b = divmod(abs(ns), 10**9)
     return f"{sign}{a}.{b:09d}"
 
+def ns_str_to_ns(s):                       # "1403636579913555712.000000"
+    return int(s.split(".")[0])
 
 def load_kf_dataset(path):
     """Parse a keyframe file with lines: t_ns tx ty tz qx qy qz qw.
