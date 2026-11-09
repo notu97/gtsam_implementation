@@ -70,3 +70,13 @@ print(f"dt min/mean/max = {dts.min():.4f} / {dts.mean():.4f} / {dts.max():.4f} s
 
 
 # 
+
+# --- WNOA motion priors between consecutive keyframe states ---
+# Power Spectral Density for the GP prior (diagonal-only, one entry per twist dim)
+Qc = 0.001 * np.ones(6)
+
+graph = gtsam.NonlinearFactorGraph()
+for k in range(1, len(kf_states)):
+    graph.add(gtsam.WnoaMotionFactorPose3(kf_states[k - 1], kf_states[k], Qc))
+
+print(f"Added {graph.size()} WNOA motion factors (Qc = {Qc})")
