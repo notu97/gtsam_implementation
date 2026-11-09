@@ -54,7 +54,7 @@ def load_kf_dataset(path):
                          gtsam.Point3(tx, ty, tz))
             kf_times_ns.append(t_ns)
             kf_poses.append(pose)
-    return kf_times_ns, kf_poses
+    return np.array(kf_times_ns, dtype=np.int64), kf_poses
 
 
 
@@ -135,11 +135,24 @@ good_fr = [o for o in good_fr if o[0] in keep]
 # Use time relative to the first keyframe (in seconds) so the double keeps
 # full precision; absolute epoch seconds would lose sub-microsecond digits.
 t0_ns = kf_times_ns[0]
-kf_times = [float(ns_to_s(t - t0_ns)) for t in kf_times_ns]
+# kf_times = [float(ns_to_s(t - t0_ns)) for t in kf_times_ns]
+
+kf_times = (kf_times_ns - t0_ns) * 1e-9  
 
 kf_states: List[StateData] = [
     StateData(X(k), V(k), kf_times[k]) for k in range(len(kf_times))
 ]
+
+# Set priors for Pose and Velocity
+initial = gtsam.Values()
+
+for k, T in enumerate(kf_poses):
+    initial.insert(X(k), T)
+for k in range(len(kf_poses)):
+    a, b = max(k - 1, 0), min(k + 1, len(kf_poses) - 1)
+    dt = kf_times[b] - kf_times[a]
+    w = gtsam.Pose3.Logmap(kf_poses[a].between(kf_poses[b])) / dt
+    initial.insert(V(k), w)          # 6-vector [rot; trans], body frame
 
 # Sanity check: first/last few keyframe states
 print(f"Loaded {len(kf_states)} keyframe states, t0 = {ns_to_s(t0_ns)} s")
@@ -168,11 +181,29 @@ for k in range(1, len(kf_states)):
 
 print(f"Added {graph.size()} WNOA motion factors (Qc = {Qc})")
 
+graph.add(gtsam.PriorFactorPose3(X(0), kf_poses[0],
+             gtsam.noiseModel.Isotropic.Sigma(6, 1e-6)))
+graph.add(gtsam.PriorFactorPose3(X(1), kf_poses[1],
+            gtsam.noiseModel.Diagonal.Sigmas([1e3]*3 + [1e-4]*3)))  # fixes translation → scale
 
-# ---------- insert landmark variables ----------
-initial = gtsam.Values()
+# # ---------- insert landmark variables ----------
+
+# for lid in keep:
+#     initial.insert(L(lid), gtsam.Point3(*P[lid]))
+
+# ---------- [Without Interp factors] insert landmark variables ----------
+# KF-only run: keep landmarks with >= 2 keyframe observations
+kf_count = defaultdict(int)
+for o in good_kf:
+    kf_count[o[0]] += 1
+
 for lid in keep:
-    initial.insert(L(lid), gtsam.Point3(*P[lid]))
+    if kf_count[lid] >= 2:
+        initial.insert(L(lid), gtsam.Point3(*P[lid]))
+
+good_kf = [o for o in good_kf if kf_count[o[0]] >= 2]
+# --------------------------------------------------
+
 
 print(" Inserted good Landmark variables")
 e = np.array([reproj_err(kf_poses[o[1]], P[o[0]], o[2], o[3]) for o in good_kf])
@@ -181,3 +212,13 @@ print(f"landmarks kept        : {len(keep)}")
 print(f"KF observations       : {len(obs_kf)} -> {len(good_kf)} after filtering")
 print(f"non-KF observations   : {len(obs_fr)} -> {len(good_fr)} after filtering")
 print(f"KF reproj RMSE (px)   : {np.sqrt(np.mean(e**2)):.3f}")
+
+
+# Add Plain reprojection factor on the Keyframe observations
+noise = gtsam.noiseModel.Robust.Create(
+    gtsam.noiseModel.mEstimator.Huber.Create(1.345),
+    gtsam.noiseModel.Isotropic.Sigma(2, 1.0))
+
+for lid, k, u, v in good_kf:
+    graph.add(gtsam.GenericProjectionFactorCal3_S2(
+        gtsam.Point2(u, v), noise, X(k), L(lid), K))
