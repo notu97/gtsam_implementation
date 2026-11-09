@@ -43,9 +43,37 @@ def load_kf_dataset(path):
     return kf_times_ns, kf_poses
 
 
+TOL_NS = 1_000_000        # 1 ms timestamp matching tolerance
+
+def nearest(ts_sorted, q):
+    i = np.searchsorted(ts_sorted, q)
+    cand = [j for j in (i - 1, i) if 0 <= j < len(ts_sorted)]
+    j = min(cand, key=lambda j: abs(int(ts_sorted[j]) - q))
+    return j, abs(int(ts_sorted[j]) - q)
+ 
+ 
+# ---------- load landmarks + keyframe observations ----------
+def load_mapPoint_and_kfObs(path, kf_t):
+    P = {}
+    obs_kf = []                                 # (lid, kf_index, u, v)
+    for line in open(path):
+        s = line.split()
+        if s[0] == "P":
+            P[int(s[1])] = np.array(list(map(float, s[2:5])))
+        else:
+            k, dt = nearest(kf_t, s_to_ns(s[2]))
+            if dt <= TOL_NS:
+                obs_kf.append((int(s[1]), k, float(s[3]), float(s[4])))
+
+    return P , obs_kf
+ 
 
 
 kf_times_ns, kf_poses = load_kf_dataset("kf_dataset-MH01_mono.txt")
+f_times_ns, f_poses = load_kf_dataset("f_dataset-MH01_mono.txt")
+
+P, obs_kf = load_mapPoint_and_kfObs("MapPoints_KF_UVobs_dataset-MH01_mono.txt", kf_times_ns)
+
 
 # Use time relative to the first keyframe (in seconds) so the double keeps
 # full precision; absolute epoch seconds would lose sub-microsecond digits.
