@@ -54,5 +54,19 @@ kf_states: List[StateData] = [
     StateData(X(k), V(k), kf_times[k]) for k in range(len(kf_times))
 ]
 
+# Sanity check: first/last few keyframe states
+print(f"Loaded {len(kf_states)} keyframe states, t0 = {ns_to_s(t0_ns)} s")
+print(f"{'k':>4} {'pose key':>8} {'vel key':>8} {'t [s]':>14} {'dt [s]':>10} {'abs time [s]':>22}  position")
+for k in list(range(5)) + list(range(len(kf_states) - 3, len(kf_states))):
+    s = kf_states[k]
+    dt = s.time - kf_states[k - 1].time if k > 0 else 0.0
+    p = kf_poses[k].translation()
+    print(f"{k:>4} {gtsam.Symbol(s.pose).string():>8} {gtsam.Symbol(s.velocity).string():>8} "
+          f"{s.time:>14.9f} {dt:>10.6f} {ns_to_s(kf_times_ns[k]):>22}  "
+          f"[{p[0]: .4f} {p[1]: .4f} {p[2]: .4f}]")
+dts = np.diff(kf_times)
+print(f"dt min/mean/max = {dts.min():.4f} / {dts.mean():.4f} / {dts.max():.4f} s, "
+      f"monotonic: {bool(np.all(dts > 0))}")
+
 
 # 
