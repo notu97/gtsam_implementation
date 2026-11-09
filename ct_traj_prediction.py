@@ -4,6 +4,7 @@ from typing import List
 
 from gtsam import Pose3, StateData
 from gtsam.symbol_shorthand import X, V, L
+import time
 
 from collections import defaultdict
 
@@ -173,7 +174,7 @@ print(f"dt min/mean/max = {dts.min():.4f} / {dts.mean():.4f} / {dts.max():.4f} s
 
 # --- WNOA motion priors between consecutive keyframe states ---
 # Power Spectral Density for the GP prior (diagonal-only, one entry per twist dim)
-Qc = 0.001 * np.ones(6)
+Qc = 0.1 * np.ones(6)
 
 graph = gtsam.NonlinearFactorGraph()
 for k in range(1, len(kf_states)):
@@ -242,3 +243,49 @@ In short, these factors tie the camera poses to the 3D points through what the c
 for lid, k, u, v in good_kf:
     graph.add(gtsam.GenericProjectionFactorCal3_S2(
         gtsam.Point2(u, v), noise, X(k), L(lid), K))
+
+
+params = gtsam.LevenbergMarquardtParams()
+params.setMaxIterations(100)
+params.setRelativeErrorTol(1e-6)
+params.setAbsoluteErrorTol(1e-6)
+params.setVerbosityLM("SUMMARY")          # prints cost per iteration
+ 
+print(f"Factors: {graph.size()}, variables: {initial.size()}")
+print(f"Initial error: {graph.error(initial):.1f}")
+ 
+t_start = time.time()
+optimizer = gtsam.LevenbergMarquardtOptimizer(graph, initial, params)
+result = optimizer.optimize()
+print(f"Final error:   {graph.error(result):.1f}  "
+      f"({optimizer.iterations()} iters, {time.time() - t_start:.1f} s)")
+ 
+ 
+# ---------- final reprojection RMSE on keyframe observations ----------
+def reproj_err_result(lid, k, u, v):
+    cam = gtsam.PinholeCameraCal3_S2(result.atPose3(X(k)), K)
+    try:
+        uv = cam.project(result.atPoint3(L(lid)))
+    except RuntimeError:                  # point ended up behind the camera
+        return np.inf
+    return np.hypot(uv[0] - u, uv[1] - v)
+ 
+e_opt = np.array([reproj_err_result(*o) for o in good_kf])
+n_bad = int(np.sum(~np.isfinite(e_opt)))
+e_fin = e_opt[np.isfinite(e_opt)]
+print(f"KF reproj RMSE after opt (px): {np.sqrt(np.mean(e_fin**2)):.3f}  "
+      f"(median {np.median(e_fin):.3f}, {n_bad} obs behind camera)")
+ 
+ 
+# ---------- save optimized keyframe trajectory (TUM format, T_WC, t in ns) ----------
+def save_tum(path, times_ns, poses):
+    with open(path, "w") as f:
+        for t, T in zip(times_ns, poses):
+            p = T.translation()
+            q = T.rotation().toQuaternion()       # gtsam Quaternion: w(), x(), y(), z()
+            f.write(f"{int(t)} {p[0]:.9f} {p[1]:.9f} {p[2]:.9f} "
+                    f"{q.x():.9f} {q.y():.9f} {q.z():.9f} {q.w():.9f}\n")
+ 
+opt_poses = [result.atPose3(X(k)) for k in range(len(kf_poses))]
+save_tum("gp_kf_MH01_mono.txt", kf_times_ns, opt_poses)
+print("Saved gp_kf_MH01_mono.txt")
