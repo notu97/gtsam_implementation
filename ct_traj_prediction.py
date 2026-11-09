@@ -3,7 +3,7 @@ import numpy as np
 from typing import List
 
 from gtsam import Pose3, StateData
-from gtsam.symbol_shorthand import X, V, L
+from gtsam.symbol_shorthand import X, V, L, Y, W
 import time
 
 from collections import defaultdict
@@ -36,6 +36,18 @@ def ns_to_s(ns):           # 1403636579963555574 -> "1403636579.963555574"
 
 def ns_str_to_ns(s):                       # "1403636579913555712.000000"
     return int(s.split(".")[0])
+
+
+def interp_state(j):
+    """Virtual GP state at frame j. Y(j), W(j) are NOT variables: they never go into `initial`."""
+    return StateData(Y(j), W(j), f_times[j])
+ 
+ 
+def bracket(tau):
+    """Keyframe states (k, k+1) with t_k < tau < t_{k+1}."""
+    k = int(np.searchsorted(kf_times, tau)) - 1
+    return kf_states[k], kf_states[k + 1]
+
 
 def load_kf_dataset(path):
     """Parse a keyframe file with lines: t_ns tx ty tz qx qy qz qw.
@@ -189,20 +201,20 @@ graph.add(gtsam.PriorFactorPose3(X(1), kf_poses[1],
 
 # # ---------- insert landmark variables ----------
 
-# for lid in keep:
-#     initial.insert(L(lid), gtsam.Point3(*P[lid]))
+for lid in keep:
+    initial.insert(L(lid), gtsam.Point3(*P[lid]))
 
 # ---------- [Without Interp factors] insert landmark variables ----------
 # KF-only run: keep landmarks with >= 2 keyframe observations
-kf_count = defaultdict(int)
-for o in good_kf:
-    kf_count[o[0]] += 1
+# kf_count = defaultdict(int)
+# for o in good_kf:
+#     kf_count[o[0]] += 1
 
-for lid in keep:
-    if kf_count[lid] >= 2:
-        initial.insert(L(lid), gtsam.Point3(*P[lid]))
+# for lid in keep:
+#     if kf_count[lid] >= 2:
+#         initial.insert(L(lid), gtsam.Point3(*P[lid]))
 
-good_kf = [o for o in good_kf if kf_count[o[0]] >= 2]
+# good_kf = [o for o in good_kf if kf_count[o[0]] >= 2]
 # --------------------------------------------------
 
 
@@ -245,6 +257,31 @@ for lid, k, u, v in good_kf:
         gtsam.Point2(u, v), noise, X(k), L(lid), K))
 
 
+#---------------- Add Interfactors------------------------------
+
+print(f"Adding interpolated reprojection factors")
+# Keep only frames strictly inside the keyframe time span
+f_times = (f_times_ns - t0_ns) * 1e-9 
+good_fr = [o for o in good_fr if kf_times[0] < f_times[o[1]] < kf_times[-1]] # Keep onlt frames i.e. between keyframe times
+
+# NOTE: a Robust (Huber) noise model inside WnoaInterpFactorPose3 crashes (segfault) in
+# GTSAM 4.3.0, so the inner factor uses a plain Gaussian model. Outliers were already
+# removed by the 5 px filter.
+noise_interp = gtsam.noiseModel.Isotropic.Sigma(2, 1.0)
+
+for lid, j, u, v in good_fr:
+    k0, k1 = bracket(f_times[j])
+
+    # Ordinary projection factor, written on the virtual pose Y(j) ...
+    proj = gtsam.GenericProjectionFactorCal3_S2(
+        gtsam.Point2(u, v), noise_interp, Y(j), L(lid), K)
+
+    # ... wrapped so Y(j) = T(tau) is computed from X(k), V(k), X(k+1), V(k+1)
+    graph.add(gtsam.WnoaInterpFactorPose3(proj, {k0, k1}, {interp_state(j)}, Qc))
+
+print(f"Added {len(good_fr)} interpolated reprojection factors")
+
+#-------------------- Setup LM Otimizer and Optimize -------------------
 params = gtsam.LevenbergMarquardtParams()
 params.setMaxIterations(100)
 params.setRelativeErrorTol(1e-6)
@@ -289,3 +326,29 @@ def save_tum(path, times_ns, poses):
 opt_poses = [result.atPose3(X(k)) for k in range(len(kf_poses))]
 save_tum("gp_kf_MH01_mono.txt", kf_times_ns, opt_poses)
 print("Saved gp_kf_MH01_mono.txt")
+
+
+
+query_js = [j for j in range(len(f_times)) if kf_times[0] < f_times[j] < kf_times[-1]]
+query_states = {interp_state(j) for j in query_js}
+ 
+interp_vals = gtsam.updateInterpValuesPose3(graph, result, set(kf_states), query_states, Qc)
+ 
+save_tum("gp_interp_frames_MH01_mono.txt",
+         [f_times_ns[j] for j in query_js],
+         [interp_vals.atPose3(Y(j)) for j in query_js])
+save_tum("gp_interp_kf_MH01_mono.txt", kf_times_ns,
+         [result.atPose3(X(k)) for k in range(len(kf_states))])
+print("Saved gp_interp_frames_MH01_mono.txt and gp_interp_kf_MH01_mono.txt")
+
+
+kf_ns = np.asarray(kf_times_ns)
+frame_js = [j for j in query_js if np.min(np.abs(kf_ns - f_times_ns[j])) > TOL_NS]
+
+all_t = list(kf_times_ns) + [f_times_ns[j] for j in frame_js]
+all_T = [result.atPose3(X(k)) for k in range(len(kf_states))] + \
+        [interp_vals.atPose3(Y(j)) for j in frame_js]
+
+order = np.argsort(np.array(all_t, dtype=np.int64), kind="stable")
+save_tum("gp_full_MH01_mono.txt", [all_t[i] for i in order], [all_T[i] for i in order])
+print(f"Saved gp_full_MH01_mono.txt ({len(order)} poses)")
