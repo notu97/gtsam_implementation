@@ -44,6 +44,10 @@ def load_kf_dataset(path):
 
 
 TOL_NS = 1_000_000        # 1 ms timestamp matching tolerance
+FRAME_STRIDE = 4          # use every 4th non-KF frame to start
+MIN_OBS = 3               # min observations per landmark
+MAX_REPROJ_PX = 5.0       # init outlier threshold
+
 
 def nearest(ts_sorted, q):
     i = np.searchsorted(ts_sorted, q)
@@ -67,12 +71,34 @@ def load_mapPoint_and_kfObs(path, kf_t):
 
     return P , obs_kf
  
-
+# ---------- load non-keyframe observations ----------
+def load_non_keyframe_obs(path, kf_t, fr_t, landmarks_id):
+    kf_set_frames = set()
+    for t in kf_t:
+        j, dt = nearest(fr_t, int(t))
+        if dt <= TOL_NS:
+            kf_set_frames.add(j)
+    
+    obs_fr = []                                 # (lid, frame_index, u, v)
+    for line in open(path):
+        s = line.split()
+        lid = int(s[0])
+        if lid not in landmarks_id:
+            continue                            # culled / merged later
+        j, dt = nearest(fr_t, s_to_ns(s[1]))
+        if dt > TOL_NS or j in kf_set_frames or j % FRAME_STRIDE:
+            continue
+        obs_fr.append((lid, j, float(s[2]), float(s[3])))
+    
+    return obs_fr
 
 kf_times_ns, kf_poses = load_kf_dataset("kf_dataset-MH01_mono.txt")
 f_times_ns, f_poses = load_kf_dataset("f_dataset-MH01_mono.txt")
 
 P, obs_kf = load_mapPoint_and_kfObs("MapPoints_KF_UVobs_dataset-MH01_mono.txt", kf_times_ns)
+print(" Some Landmark Id: ", P.keys())
+obs_fr = load_non_keyframe_obs("Frame_obs_MH01_mono.txt", kf_times_ns, f_times_ns, P)
+
 
 
 # Use time relative to the first keyframe (in seconds) so the double keeps
