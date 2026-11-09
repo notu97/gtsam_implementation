@@ -3,11 +3,25 @@ import numpy as np
 from typing import List
 
 from gtsam import Pose3, StateData
-from gtsam.symbol_shorthand import X, V
+from gtsam.symbol_shorthand import X, V, L
+
+from collections import defaultdict
 
 # Plotting tools: Needs pyvista
 # from gtsam.examples.GaussianProcessWnoaInterpolationSE3Helpers import collect_estimated_plot_data, collect_interp_plot_data, plot_results
 
+
+
+TOL_NS = 1_000_000        # 1 ms timestamp matching tolerance
+FRAME_STRIDE = 4          # use every 4th non-KF frame to start
+MIN_OBS = 3               # min observations per landmark
+MAX_REPROJ_PX = 5.0       # init outlier threshold
+
+# EuRoC cam0 intrinsics. ORB-SLAM3's EuRoC yaml resizes images 752x480 -> 600x350
+# (Camera.newWidth/newHeight), so the pixels in the dumps live in the resized image.
+# Pixels are already undistorted (mvKeysUn), so no distortion model here.
+SX, SY = 600 / 752, 350 / 480
+K = gtsam.Cal3_S2(458.654 * SX, 457.296 * SY, 0.0, 367.215 * SX, 248.375 * SY)
 
 def s_to_ns(s):            # "1403636579.963555574"
     a, b = s.split('.')
@@ -42,11 +56,6 @@ def load_kf_dataset(path):
             kf_poses.append(pose)
     return kf_times_ns, kf_poses
 
-
-TOL_NS = 1_000_000        # 1 ms timestamp matching tolerance
-FRAME_STRIDE = 4          # use every 4th non-KF frame to start
-MIN_OBS = 3               # min observations per landmark
-MAX_REPROJ_PX = 5.0       # init outlier threshold
 
 
 def nearest(ts_sorted, q):
@@ -92,13 +101,35 @@ def load_non_keyframe_obs(path, kf_t, fr_t, landmarks_id):
     
     return obs_fr
 
+
+# ---------- reprojection check at initialization ----------
+def reproj_err(T_WC, p, u, v):
+    cam = gtsam.PinholeCameraCal3_S2(T_WC, K)
+    try:
+        uv = cam.project(gtsam.Point3(*p))  # raises on point behind camera
+    except RuntimeError:
+        return np.inf
+    return float(np.hypot(uv[0] - u, uv[1] - v))
+
+
 kf_times_ns, kf_poses = load_kf_dataset("kf_dataset-MH01_mono.txt")
 f_times_ns, f_poses = load_kf_dataset("f_dataset-MH01_mono.txt")
 
 P, obs_kf = load_mapPoint_and_kfObs("MapPoints_KF_UVobs_dataset-MH01_mono.txt", kf_times_ns)
-print(" Some Landmark Id: ", P.keys())
+# print(" Some Landmark Id: ", P.keys())
 obs_fr = load_non_keyframe_obs("Frame_obs_MH01_mono.txt", kf_times_ns, f_times_ns, P)
 
+good_kf = [o for o in obs_kf if reproj_err(kf_poses[o[1]], P[o[0]], o[2], o[3]) < MAX_REPROJ_PX]
+good_fr = [o for o in obs_fr if reproj_err(f_poses[o[1]], P[o[0]], o[2], o[3]) < MAX_REPROJ_PX]
+ 
+ 
+# ---------- keep landmarks with enough observations ----------
+count = defaultdict(int)
+for o in good_kf + good_fr:
+    count[o[0]] += 1
+keep = {lid for lid, c in count.items() if c >= MIN_OBS}
+good_kf = [o for o in good_kf if o[0] in keep]
+good_fr = [o for o in good_fr if o[0] in keep]
 
 
 # Use time relative to the first keyframe (in seconds) so the double keeps
@@ -136,3 +167,17 @@ for k in range(1, len(kf_states)):
     graph.add(gtsam.WnoaMotionFactorPose3(kf_states[k - 1], kf_states[k], Qc))
 
 print(f"Added {graph.size()} WNOA motion factors (Qc = {Qc})")
+
+
+# ---------- insert landmark variables ----------
+initial = gtsam.Values()
+for lid in keep:
+    initial.insert(L(lid), gtsam.Point3(*P[lid]))
+
+print(" Inserted good Landmark variables")
+e = np.array([reproj_err(kf_poses[o[1]], P[o[0]], o[2], o[3]) for o in good_kf])
+print(f"landmarks in P        : {len(P)}")
+print(f"landmarks kept        : {len(keep)}")
+print(f"KF observations       : {len(obs_kf)} -> {len(good_kf)} after filtering")
+print(f"non-KF observations   : {len(obs_fr)} -> {len(good_fr)} after filtering")
+print(f"KF reproj RMSE (px)   : {np.sqrt(np.mean(e**2)):.3f}")
