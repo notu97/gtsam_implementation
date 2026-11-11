@@ -5,8 +5,25 @@ from typing import List
 from gtsam import Pose3, StateData
 from gtsam.symbol_shorthand import X, V, L, Y, W
 import time
+import os
+import argparse
 
 from collections import defaultdict
+
+# ---------- dataset selection (defaults reproduce the original MH01 run in cwd) ----------
+_ap = argparse.ArgumentParser()
+_ap.add_argument("--data-dir", default=".", help="folder with the ORB-SLAM3 dump files")
+_ap.add_argument("--seq", default="MH01", help="sequence tag used in file names, e.g. MH01")
+_ap.add_argument("--out-dir", default=".", help="where to write the gp_*.txt results")
+ARGS = _ap.parse_args()
+os.makedirs(ARGS.out_dir, exist_ok=True)
+
+def data_path(prefix):   # e.g. data_path("kf_dataset") -> <data-dir>/kf_dataset-MH01_mono.txt
+    return os.path.join(ARGS.data_dir, f"{prefix}-{ARGS.seq}_mono.txt" if prefix != "Frame_obs"
+                        else f"Frame_obs_{ARGS.seq}_mono.txt")
+
+def out_path(prefix):    # e.g. out_path("gp_kf") -> <out-dir>/gp_kf_MH01_mono.txt
+    return os.path.join(ARGS.out_dir, f"{prefix}_{ARGS.seq}_mono.txt")
 
 # Plotting tools: Needs pyvista
 # from gtsam.examples.GaussianProcessWnoaInterpolationSE3Helpers import collect_estimated_plot_data, collect_interp_plot_data, plot_results
@@ -125,12 +142,12 @@ def reproj_err(T_WC, p, u, v):
     return float(np.hypot(uv[0] - u, uv[1] - v))
 
 
-kf_times_ns, kf_poses = load_kf_dataset("kf_dataset-MH01_mono.txt")
-f_times_ns, f_poses = load_kf_dataset("f_dataset-MH01_mono.txt")
+kf_times_ns, kf_poses = load_kf_dataset(data_path("kf_dataset"))
+f_times_ns, f_poses = load_kf_dataset(data_path("f_dataset"))
 
-P, obs_kf = load_mapPoint_and_kfObs("MapPoints_KF_UVobs_dataset-MH01_mono.txt", kf_times_ns)
+P, obs_kf = load_mapPoint_and_kfObs(data_path("MapPoints_KF_UVobs_dataset"), kf_times_ns)
 # print(" Some Landmark Id: ", P.keys())
-obs_fr = load_non_keyframe_obs("Frame_obs_MH01_mono.txt", kf_times_ns, f_times_ns, P)
+obs_fr = load_non_keyframe_obs(data_path("Frame_obs"), kf_times_ns, f_times_ns, P)
 
 good_kf = [o for o in obs_kf if reproj_err(kf_poses[o[1]], P[o[0]], o[2], o[3]) < MAX_REPROJ_PX]
 good_fr = [o for o in obs_fr if reproj_err(f_poses[o[1]], P[o[0]], o[2], o[3]) < MAX_REPROJ_PX]
@@ -186,7 +203,7 @@ print(f"dt min/mean/max = {dts.min():.4f} / {dts.mean():.4f} / {dts.max():.4f} s
 
 # --- WNOA motion priors between consecutive keyframe states ---
 # Power Spectral Density for the GP prior (diagonal-only, one entry per twist dim)
-Qc = 0.1 * np.ones(6)
+Qc = 0.001 * np.ones(6)
 
 graph = gtsam.NonlinearFactorGraph()
 for k in range(1, len(kf_states)):
@@ -324,8 +341,8 @@ def save_tum(path, times_ns, poses):
                     f"{q.x():.9f} {q.y():.9f} {q.z():.9f} {q.w():.9f}\n")
  
 opt_poses = [result.atPose3(X(k)) for k in range(len(kf_poses))]
-save_tum("gp_kf_MH01_mono.txt", kf_times_ns, opt_poses)
-print("Saved gp_kf_MH01_mono.txt")
+save_tum(out_path("gp_kf"), kf_times_ns, opt_poses)
+print(f"Saved {out_path('gp_kf')}")
 
 
 
@@ -334,12 +351,12 @@ query_states = {interp_state(j) for j in query_js}
  
 interp_vals = gtsam.updateInterpValuesPose3(graph, result, set(kf_states), query_states, Qc)
  
-save_tum("gp_interp_frames_MH01_mono.txt",
+save_tum(out_path("gp_interp_frames"),
          [f_times_ns[j] for j in query_js],
          [interp_vals.atPose3(Y(j)) for j in query_js])
-save_tum("gp_interp_kf_MH01_mono.txt", kf_times_ns,
+save_tum(out_path("gp_interp_kf"), kf_times_ns,
          [result.atPose3(X(k)) for k in range(len(kf_states))])
-print("Saved gp_interp_frames_MH01_mono.txt and gp_interp_kf_MH01_mono.txt")
+print(f"Saved {out_path('gp_interp_frames')} and {out_path('gp_interp_kf')}")
 
 
 kf_ns = np.asarray(kf_times_ns)
@@ -350,5 +367,5 @@ all_T = [result.atPose3(X(k)) for k in range(len(kf_states))] + \
         [interp_vals.atPose3(Y(j)) for j in frame_js]
 
 order = np.argsort(np.array(all_t, dtype=np.int64), kind="stable")
-save_tum("gp_full_MH01_mono.txt", [all_t[i] for i in order], [all_T[i] for i in order])
-print(f"Saved gp_full_MH01_mono.txt ({len(order)} poses)")
+save_tum(out_path("gp_full"), [all_t[i] for i in order], [all_T[i] for i in order])
+print(f"Saved {out_path('gp_full')} ({len(order)} poses)")

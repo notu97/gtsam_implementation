@@ -1,0 +1,12 @@
+# Run outputs
+results*/
+
+# Per-sequence ORB-SLAM3 dumps
+MH_01_data/
+MH_03_data/
+MH_04_data/
+
+MH_*_data/
+
+# Paper abstract
+AIAA_2027_Forum_Abstract.pdf

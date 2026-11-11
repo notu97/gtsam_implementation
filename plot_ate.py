@@ -62,8 +62,14 @@ def ate(path, t_gt, p_gt):
 
 
 def main():
-    t_gt, p_gt = load_gt(sys.argv[1])
-    runs = [ate(f, t_gt, p_gt) for f in sys.argv[2:]]
+    args = sys.argv[1:]
+    out_png = "ate_comparison.png"
+    if "-o" in args:                                    # optional: -o <output.png>
+        i = args.index("-o")
+        out_png = args[i + 1]
+        del args[i:i + 2]
+    t_gt, p_gt = load_gt(args[0])
+    runs = [ate(f, t_gt, p_gt) for f in args[1:]]
 
     for r in runs:
         print(f"{r['name']:40s} ATE RMSE = {r['rmse']:.4f} m   scale = {r['scale']:.3f}   "
@@ -90,8 +96,8 @@ def main():
     for a in (ax3, ax2, axe):
         a.legend(fontsize=8)
     fig.tight_layout()
-    fig.savefig("ate_comparison.png", dpi=150)
-    print("Saved ate_comparison.png")
+    fig.savefig(out_png, dpi=150)
+    print(f"Saved {out_png}")
     plt.show()
 
 
