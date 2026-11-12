@@ -1,5 +1,8 @@
 # Run outputs
 results*/
+frame_lists/
+result*/
+
 
 # Per-sequence ORB-SLAM3 dumps
 MH_01_data/
