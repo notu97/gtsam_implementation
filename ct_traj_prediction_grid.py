@@ -184,13 +184,19 @@ def bracket(tau):
 # ---------- initial values: ORB-SLAM3 frame poses at the state frames ----------
 initial = gtsam.Values()
 init_T = [f_poses[j] for j in state_js]
+
+# ---------- Initialize the Poses values ----------
 for i, T in enumerate(init_T):
     initial.insert(X(i), T)
+
+# ---------- Initialize the Velocities values ----------
+delta_t = 10  # 50 ms in frames
 for i, j in enumerate(state_js):                # velocity from neighbouring FRAMES (50 ms apart)
-    a, b = max(j - 1, 0), min(j + 1, len(f_poses) - 1)
+    a, b = max(j - delta_t, 0), min(j + delta_t, len(f_poses) - 1)
     w = gtsam.Pose3.Logmap(f_poses[a].between(f_poses[b])) / (f_times[b] - f_times[a])
     initial.insert(V(i), w)                     # 6-vector [rot; trans], body frame
 
+# ---------- Initialize the Landmark values ----------
 for lid in keep:
     initial.insert(L(lid), gtsam.Point3(*P[lid]))
 
